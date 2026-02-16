@@ -118,7 +118,7 @@ class ResearchReport(BaseModel):
     summary: str = Field(..., description="A concise executive summary of the key findings.")
     sections: List[ResearchReportSection] = Field(..., description="Detailed sections covering different aspects of the research.")
     # We keep sources at the top level for easier reference by index
-    sources: List[Source] = Field(..., description="A list of all unique sources consulted during the research.")
+    sources: List[Source] = Field(default_factory=list, description="A list of all unique sources consulted during the research.")
     potential_biases: Optional[str] = Field(None, description="A brief note on potential biases or limitations found during research (e.g., lack of diverse sources, conflicting information).")
     report_generated_at: datetime = Field(default_factory=datetime.now, description="Timestamp when the report was generated.")
 

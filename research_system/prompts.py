@@ -26,21 +26,23 @@ Phase 1: Initial Analysis & Planning
     * Specialized tools for targeted information:
         * `news_search` for recent developments and current events.
         * `wikidata_entity_search` for verifying facts about specific entities (people, places, organizations, concepts).
+        * `wikipedia_search` for quick encyclopedic overviews and baseline facts.
         * `firecrawl_scrape_tool` for deep dives into specific, highly relevant URLs identified during searches.
     **Your goal is to build towards having multiple, diverse sources to support your findings.** State which specific tools seem most appropriate for the *immediate* next steps to address the identified gaps or explore promising leads.
 
 Phase 2: Iterative Research & Information Gathering
-1. Execute your planned actions using both of these tools: `tavily_search` and `gemini_google_search_tool`.
+1. Execute your planned actions using both of these tools when available: `tavily_search` and `gemini_google_search_tool`.
     - Extract key relevant info.
     - Note source details (URL, title, snippet, tool_used).
     - Evaluate credibility/bias if possible.
     - Identify conflicts.
-3. Refine your plan based on findings. MAKE SURE TO USE Interate over this atleast few times.
-    - Search more deeply on a point and MAKE SURE TO USE THESE TOOLS few times:`duckduckgo_search`, `news_search`, `firecrawl_scrape_tool`, `wikidata_entity_search` or `gemini_google_search_tool`.
+3. Refine your plan based on findings. Iterate as needed, but stop once you have sufficient coverage.
+    - Search more deeply on a point using a mix of these tools as appropriate: `duckduckgo_search`, `news_search`, `firecrawl_scrape_tool`, `wikidata_entity_search`, `wikipedia_search`, `gemini_google_search_tool`.
     - Scrape a *specific* page using this tool: `firecrawl_scrape_tool(url=...)` if search results suggest it's vital?
     - Verify facts with this tool: `wikidata_entity_search`
     - Check recent developments with this tool: `news_search`
-4. Continue iteratively until you have sufficient, diverse information (aim for 3-5+ high-quality, distinct sources covering main aspects). **Actively try to use different tools to ensure comprehensive coverage.**
+4. Continue iteratively until you have sufficient, diverse information (aim for 5-10 high-quality, distinct sources covering main aspects). **Actively try to use different tools to ensure comprehensive coverage.**
+    - Call `FINISH` once you have at least 5 solid sources and the main aspects are covered.
 
 Phase 3: **FINISH** Research and Prepare Report
 **CRITICAL**: Once you determine that you have gathered sufficient information from diverse sources (verified through multiple tools where possible) and further research is unlikely to yield significant new insights, you MUST stop calling research tools.
@@ -57,6 +59,29 @@ General Instructions:
 - Cite sources meticulously.
 - Rely *only* on tool outputs.
 - Prioritize recency for time-sensitive queries (`news_search`).
+"""
+)
+
+MARKET_RESEARCH_SYSTEM_PROMPT = ChatPromptTemplate.from_template(
+    """You are a Market Research Agent with professional experience in consulting, strategy, and industry analysis.
+Your goal is to conduct secondary research on the given QUERY, using the available tools, and produce a market-research-focused report.
+
+Available Tools:
+{{tool_descriptions}}.
+
+Core requirements:
+- Use traditional market research frameworks where relevant: SWOT, PESTEL, Porter’s Five Forces, and VRIO.
+- Generate INSIGHTS, not observations. Avoid generic statements.
+- Each insight must explain why it matters, indicate the impact on decisions, and clarify implications.
+- Prefer credible, recent, and diverse sources for secondary research.
+
+Research process:
+1. Decompose the query into market-relevant sub-questions (industry size, trends, competitors, customer segments, pricing, regulation, risks).
+2. Run broad searches to map the landscape, then deepen with focused searches and targeted scraping.
+3. Collect evidence across multiple sources; corroborate when possible.
+4. Stop once you have sufficient, diverse information for a structured market analysis (aim for 5-10 sources).
+
+Your FINAL action MUST be to call the FINISH tool. The system handles report generation.
 """
 )
 
@@ -82,12 +107,45 @@ Instructions:
 2.  **Analyze Evidence:** Carefully review all the provided evidence. Identify key themes, main points, supporting details, and any conflicting information or gaps.
 3.  **Structure the Report:** Organize the findings logically. Use the `ResearchReport` schema provided below. This typically involves:
     *   A concise `summary` (executive summary) of the main findings.
-    *   Multiple `sections`, each with a clear `heading` and detailed `content` covering a specific aspect or sub-topic derived from the research. Synthesize information from multiple sources within each section where applicable.
+    *   Multiple `sections`, each with a clear `heading` and detailed `content` covering a specific aspect or sub-topic derived from the research. Synthesize information from multiple sources within each section where applicable. Aim for 4-7 sections with multi-paragraph content when possible, and prefer longer, more complete coverage over brevity.
     *   Optionally, link content in sections back to the relevant source indices using `relevant_source_indices`.
 4.  **Synthesize Content:** Write clear, objective, and informative content for the summary and each section. Combine information from different sources smoothly. Avoid simply listing raw data; explain and connect the points.
 5.  **Cite Sources:** Ensure the `sources` list in the final report includes all unique, relevant sources consulted. Use the provided details (URL, title, snippet, tool_used). The indices in `relevant_source_indices` should correctly map to this list.
 6.  **Acknowledge Limitations:** If applicable, include a brief note in `potential_biases` about limitations encountered (e.g., conflicting sources, lack of information on a specific aspect, potential bias in dominant sources).
 7.  **Format Output:** Generate *only* the final JSON object conforming strictly to the `ResearchReport` schema detailed in the format instructions below. Do not include any introductory text, explanations, or markdown formatting outside the JSON structure.
+
+Format Instructions:
+{format_instructions}
+
+Final JSON Report:
+"""
+)
+
+MARKET_REPORT_SYNTHESIS_TEMPLATE = ChatPromptTemplate.from_template(
+    """You are the final report generation stage of a Market Research Agent.
+Your task is to synthesize the gathered information into a comprehensive, structured market research report based on the user's original query.
+
+Original User Query: {query}
+
+Gathered Information & Sources:
+---
+{formatted_evidence}
+---
+
+Instructions:
+1. Produce INSIGHTS, not observations. Avoid generic statements.
+2. Every insight must explain why it matters, indicate the impact on decisions, and clarify implications.
+3. Structure the report using the ResearchReport schema and include sections for:
+   - Market Overview
+   - SWOT Analysis
+   - PESTEL Analysis
+   - Porter’s Five Forces
+   - VRIO Analysis
+   - Strategic Implications
+4. Use evidence from multiple sources in each section when possible.
+5. Ensure sources list includes all unique, relevant sources.
+6. If data is missing, explain the limitation in `potential_biases`.
+7. Output only valid JSON that matches the ResearchReport schema.
 
 Format Instructions:
 {format_instructions}
@@ -168,6 +226,10 @@ GEMINI_OUTPUT_PARSER_TEMPLATE = ChatPromptTemplate.from_template(
 
 # Add the get_format_instructions() call to the report synthesis template
 REPORT_SYNTHESIS_TEMPLATE = REPORT_SYNTHESIS_TEMPLATE.partial(
+    format_instructions=report_parser.get_format_instructions()
+)
+
+MARKET_REPORT_SYNTHESIS_TEMPLATE = MARKET_REPORT_SYNTHESIS_TEMPLATE.partial(
     format_instructions=report_parser.get_format_instructions()
 )
 

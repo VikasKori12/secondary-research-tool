@@ -6,7 +6,7 @@ Run with: streamlit run app.py
 """
 from __future__ import annotations
 
-import os, json, colorsys, textwrap, asyncio # Removed requests, time; Added asyncio
+import os, json, colorsys, textwrap, asyncio, re, time # Removed requests, time; Added asyncio
 from typing import List, Dict, Any, Optional
 
 import streamlit as st
@@ -16,6 +16,8 @@ from streamlit_lottie import st_lottie  # Animated loaders
 # Added imports for agent and schemas
 from research_system.agent import run_web_research
 from research_system.schemas import ResearchReport, ErrorResponse
+
+
 
 # ────────────────────────────
 # Configuration (inline) 🛠️
@@ -69,30 +71,68 @@ def render_report(report_data: Dict[str, Any]):
         st.error("No report data received.")
         return
 
+    def is_empty_section(text: str) -> bool:
+        if not text:
+            return True
+        cleaned = " ".join(text.split()).lower()
+        if len(cleaned) < 20:
+            return True
+        return cleaned in {"no content.", "no content", "n/a", "none"}
+
+    def is_noise_source(title: str, snippet: Optional[str]) -> bool:
+        noise_terms = [
+            "read more",
+            "learn more",
+            "click here",
+            "sign in",
+            "sign up",
+            "subscribe",
+            "contact us",
+            "privacy policy",
+            "terms of service",
+            "cookie",
+        ]
+        title_clean = (title or "").strip().lower()
+        snippet_clean = (snippet or "").strip().lower()
+        if len(title_clean) < 4:
+            return True
+        return any(term in title_clean or term in snippet_clean for term in noise_terms)
+
+    def clean_text(text: str) -> str:
+        if not text:
+            return ""
+        # Remove bracketed ellipses like "[...]" or "[ ... ]".
+        return re.sub(r"\[\s*\.\.\.\s*\]", "", text)
+
     query = report_data.get("query", "N/A")
-    summary = report_data.get("summary", "No summary provided.")
+    summary = clean_text(report_data.get("summary", "No summary provided."))
     sections = report_data.get("sections", [])
     sources = report_data.get("sources", [])
-    biases = report_data.get("potential_biases")
+    biases = clean_text(report_data.get("potential_biases") or "")
 
     st.subheader(f"Research Report for: \"{query}\"")
 
     # --- Display Summary ---
     st.markdown("### Executive Summary")
-    summary_truncated = truncate(summary)
-    st.markdown(f"<div class='summary-box'>{summary_truncated}</div>", unsafe_allow_html=True)
-    if len(summary.split()) > MAX_SUMMARY_WORDS:
-        with st.expander("Read full summary"):
-            st.markdown(f"<div class='summary-box'>{summary}</div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='summary-box'>{summary}</div>", unsafe_allow_html=True)
 
     # --- Display Sections ---
     if sections:
         st.markdown("### Detailed Findings")
+        shown_sections = 0
         for section in sections:
             heading = section.get('heading', 'Section')
-            content = section.get('content', 'No content.')
-            with st.expander(heading, expanded=False):
-                 st.markdown(content, unsafe_allow_html=True)
+            content = clean_text(section.get('content', ''))
+            heading_lower = heading.strip().lower()
+            if heading_lower in {"executive summary", "summary", "overview"}:
+                continue
+            if is_empty_section(content):
+                continue
+            st.markdown(f"#### {heading}")
+            st.markdown(content, unsafe_allow_html=True)
+            shown_sections += 1
+        if shown_sections == 0:
+            st.info("No detailed sections were generated in the report.")
     else:
         st.info("No detailed sections were generated in the report.")
 
@@ -104,62 +144,46 @@ def render_report(report_data: Dict[str, Any]):
     # --- Display Sources ---
     if sources:
         st.markdown("### Sources Consulted")
-        # Create tool badges at the top
-        tools_used = sorted({src.get("tool_used", "Unknown") for src in sources if src.get("tool_used")})
-        if tools_used:
-            with st.container():
-                tool_cols = st.columns(min(len(tools_used), 4))
-                for i, tool in enumerate(tools_used):
-                    col_index = i % 4
-                    tool_badge_color = source_color(tool)
-                    tool_cols[col_index].markdown(
-                        f"""<div style='background:{tool_badge_color}33;padding:8px 12px;
-                        border-radius:6px;font-weight:600;text-align:center;font-size:0.9em;
-                        margin-bottom:10px;border:1px solid {tool_badge_color}55;
-                        box-shadow:0 2px 4px rgba(0,0,0,0.1);'>{tool}</div>""",
-                        unsafe_allow_html=True,
-                    )
-            st.markdown("""<div style='height:15px'></div>""", unsafe_allow_html=True)
-
-        # Display each source
-        for i, src in enumerate(sources):
-            # Generate color based on tool used
-            tool_name = src.get("tool_used", "Web Source")
-            c = source_color(tool_name)
-            title = src.get("title") or src.get("url", "No title")
-            snippet = src.get("snippet", "No preview available")
+        link_lines = []
+        for index, src in enumerate(sources, start=1):
             url = src.get("url")
-
-            st.markdown(
-                f"""
-                <div style='border-left:6px solid {c};padding:15px;margin:15px 0;
-                    border-radius:8px;background:{BG_SECONDARY};position:relative;
-                    box-shadow:0 4px 6px rgba(0, 0, 0, 0.2);'>
-                    <span style='position:absolute;top:10px;right:10px;background:{c};color:white;
-                        padding:4px 10px;border-radius:4px;font-size:12px;font-weight:bold;'>{tool_name}</span>
-                    <a href='{url}' target='_blank'
-                        style='color:{PRIMARY_COLOR};font-weight:600;
-                        text-decoration:none;font-size:16px;display:block;margin-top:5px;margin-bottom:10px;'>{i+1}. {title}</a>
-                    <span style='color:#CCCCCC;font-size:14px;'>{snippet}</span>
-                    <div style='clear:both;'></div>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+            if not url:
+                continue
+            title = src.get("title") or url
+            tool_used = src.get("tool_used")
+            snippet = clean_text(src.get("snippet") or "")
+            if is_noise_source(title, snippet):
+                continue
+            tool_suffix = f" — {tool_used}" if tool_used and tool_used != "tavily_search" else ""
+            line = f"{index}. [{title}]({url}){tool_suffix}"
+            if snippet:
+                line += f"\n    {snippet}"
+            link_lines.append(line)
+        if link_lines:
+            st.markdown("\n".join(link_lines))
+        else:
+            st.info("No source links were available in the report.")
     else:
         st.info("No sources were listed in the final report.")
+
+
+def is_overloaded_error(message: str) -> bool:
+    if not message:
+        return False
+    message_lower = message.lower()
+    return "overloaded" in message_lower or "error code: 529" in message_lower
 
 
 # ────────────────────────────
 # Global page settings
 # ────────────────────────────
 st.set_page_config(
-    page_title="Faraday Web Research Agent",
+    page_title="Web Research Agent",
     page_icon="🤖",
     layout="centered",
     initial_sidebar_state="collapsed",
     menu_items={
-        'About': "Faraday Web Research Agent - An AI assistant to research topics online."
+        'About': "Web Research Agent - An AI assistant to research topics online."
     }
 )
 
@@ -169,6 +193,9 @@ st.set_page_config(
 st.markdown(
     f"""
     <style>
+    @import url('https://fonts.googleapis.com/icon?family=Material+Icons');
+    @import url('https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:opsz,wght,FILL,GRAD@20..48,400,0,0');
+
     /* Root variables for theming */
     :root {{
         --primary-color: {PRIMARY_COLOR};
@@ -181,6 +208,27 @@ st.markdown(
     /* Base styling */
     html, body, [class*="st"] {{
         font-family: var(--font);
+    }}
+
+    .material-symbols-outlined {{
+        font-family: 'Material Symbols Outlined' !important;
+        font-variation-settings: 'opsz' 24, 'wght' 400, 'FILL' 0, 'GRAD' 0;
+    }}
+
+    .material-icons {{
+        font-family: 'Material Icons' !important;
+        font-weight: normal;
+        font-style: normal;
+        font-size: 20px;
+        line-height: 1;
+        letter-spacing: normal;
+        text-transform: none;
+        display: inline-block;
+        white-space: nowrap;
+        word-wrap: normal;
+        direction: ltr;
+        -webkit-font-feature-settings: 'liga';
+        -webkit-font-smoothing: antialiased;
     }}
 
     .stApp {{
@@ -267,6 +315,16 @@ st.markdown(
     .stApp > header {{
         background-color: transparent;
     }}
+
+    /* Remove expander icon text that overlaps headings */
+    div[data-testid="stExpander"] summary svg,
+    div[data-testid="stExpander"] summary .material-icons,
+    div[data-testid="stExpander"] summary .material-symbols-outlined {{
+        display: none !important;
+    }}
+    div[data-testid="stExpander"] summary {{
+        padding-left: 0.25rem;
+    }}
     </style>
     """,
     unsafe_allow_html=True,
@@ -296,6 +354,8 @@ query_input = st.text_input(
     placeholder="Enter your research query...",
     label_visibility="collapsed"
 )
+
+market_research_enabled = st.checkbox("Market Research", value=False)
 
 # Initialize session state for tracking progress
 if 'progress_state' not in st.session_state:
@@ -346,32 +406,57 @@ if query_input:
 
             # Use spinner while the agent runs
             with st.spinner("Performing web research... This may take a few moments."):
-                try:
-                    # Directly call the agent function
-                    research_result = asyncio.run(run_web_research(query=query_input))
+                max_retries = 2
+                base_delay_seconds = 6
+                retry_notice = st.empty()
 
-                    # Check the result type and update state
-                    if isinstance(research_result, ResearchReport):
-                        st.session_state.progress_state['status'] = 'completed'
-                        st.session_state.progress_state['report_data'] = research_result.dict() # Store report as dict
-                    elif isinstance(research_result, ErrorResponse):
+                for attempt in range(max_retries + 1):
+                    try:
+                        # Directly call the agent function
+                        research_result = asyncio.run(
+                            run_web_research(
+                                query=query_input,
+                                config={"market_research": market_research_enabled},
+                            )
+                        )
+
+                        # Check the result type and update state
+                        if isinstance(research_result, ResearchReport):
+                            st.session_state.progress_state['status'] = 'completed'
+                            st.session_state.progress_state['report_data'] = research_result.dict() # Store report as dict
+                        elif isinstance(research_result, ErrorResponse):
+                            details = f"{research_result.error}: {research_result.details}"
+                            if is_overloaded_error(details) and attempt < max_retries:
+                                delay_seconds = base_delay_seconds * (attempt + 1)
+                                retry_notice.info(
+                                    f"The model is overloaded. Retrying in {delay_seconds} seconds..."
+                                )
+                                time.sleep(delay_seconds)
+                                continue
+                            st.session_state.progress_state['status'] = 'error'
+                            st.session_state.progress_state['error_message'] = details
+                        else:
+                            # Handle unexpected return type
+                            st.session_state.progress_state['status'] = 'error'
+                            st.session_state.progress_state['error_message'] = f"Agent returned an unexpected result type: {type(research_result)}"
+
+                        st.rerun() # Rerun to display results or error
+
+                    except ImportError as ie:
                         st.session_state.progress_state['status'] = 'error'
-                        st.session_state.progress_state['error_message'] = f"{research_result.error}: {research_result.details}"
-                    else:
-                        # Handle unexpected return type
+                        st.session_state.progress_state['error_message'] = f"Import Error: {ie}. Ensure agent components are installed and accessible."
+                        st.rerun()
+                    except Exception as e:
+                        if is_overloaded_error(str(e)) and attempt < max_retries:
+                            delay_seconds = base_delay_seconds * (attempt + 1)
+                            retry_notice.info(
+                                f"The model is overloaded. Retrying in {delay_seconds} seconds..."
+                            )
+                            time.sleep(delay_seconds)
+                            continue
                         st.session_state.progress_state['status'] = 'error'
-                        st.session_state.progress_state['error_message'] = f"Agent returned an unexpected result type: {type(research_result)}"
-
-                    st.rerun() # Rerun to display results or error
-
-                except ImportError as ie:
-                     st.session_state.progress_state['status'] = 'error'
-                     st.session_state.progress_state['error_message'] = f"Import Error: {ie}. Ensure agent components are installed and accessible."
-                     st.rerun()
-                except Exception as e:
-                    st.session_state.progress_state['status'] = 'error'
-                    st.session_state.progress_state['error_message'] = f"An unexpected error occurred during research: {e}"
-                    st.rerun()
+                        st.session_state.progress_state['error_message'] = f"An unexpected error occurred during research: {e}"
+                        st.rerun()
 
         # --- Display results if process is complete ---
         elif current_status == 'completed':

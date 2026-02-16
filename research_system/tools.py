@@ -16,7 +16,7 @@ from langchain_core.prompts import ChatPromptTemplate, PromptTemplate
 from langchain_core.output_parsers.json import JsonOutputParser
 from langchain_core.exceptions import OutputParserException
 from langchain_core.tools import tool, BaseTool
-from .config import get_primary_llm, get_azure_openai_parser_llm
+from .config import get_primary_llm, get_parser_llm
 from langchain.tools import Tool
 from langchain_community.tools.tavily_search import TavilySearchResults
 from langchain_core.pydantic_v1 import BaseModel, Field
@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 # --- Internal Helper Functions ---
 def parse_gemini_output_with_llm(gemini_raw_text: str, query: str) -> Optional[Dict[str, Any]]:
     """
-    Uses the secondary Azure OpenAI LLM to parse the raw text output from the
+    Uses a parser LLM (OpenAI or Anthropic) to parse the raw text output from the
     Gemini call into a structured format, focusing on summary and key facts.
 
     Args:
@@ -48,9 +48,9 @@ def parse_gemini_output_with_llm(gemini_raw_text: str, query: str) -> Optional[D
         A dictionary containing 'summary' and 'key_facts', or None if parsing fails.
         Source extraction is handled separately using grounding metadata when available.
     """
-    parser_llm = get_azure_openai_parser_llm()
+    parser_llm = get_parser_llm()
     if not parser_llm:
-        logger.error("Azure OpenAI Parser LLM is not available for Gemini parsing.")
+        logger.error("Parser LLM is not available for Gemini parsing.")
         return None
 
     # Define a simpler Pydantic model or just use a dict structure
@@ -82,7 +82,7 @@ def parse_gemini_output_with_llm(gemini_raw_text: str, query: str) -> Optional[D
     )
 
     chain = prompt_template | parser_llm | parser
-    logger.info("Attempting to parse Gemini text output (summary/facts) using Azure OpenAI Parser LLM.")
+    logger.info("Attempting to parse Gemini text output (summary/facts) using parser LLM.")
 
     try:
         # Invoke chain to get summary and key facts
@@ -96,6 +96,31 @@ def parse_gemini_output_with_llm(gemini_raw_text: str, query: str) -> Optional[D
         return {"summary": parsed_text_dict.get("summary", ""), "key_facts": parsed_text_dict.get("key_facts", [])}
     except OutputParserException as ope:
          logger.error(f"Failed to parse Gemini text output. Parser Error: {ope}. Raw output was:\n{gemini_raw_text[:500]}...")
+         try:
+             from langchain_core.output_parsers import StrOutputParser
+             fallback_prompt = ChatPromptTemplate.from_template(
+                 """Return a JSON object with keys 'summary' and 'key_facts' (array of strings).
+Use only the provided text, and do not include any other keys or text.
+
+Query: {query}
+Text:
+---
+{gemini_raw_text}
+---
+
+JSON:"""
+             )
+             fallback_chain = fallback_prompt | parser_llm | StrOutputParser()
+             raw_json = fallback_chain.invoke({"query": query, "gemini_raw_text": gemini_raw_text}).strip()
+             fallback_data = json.loads(raw_json)
+             if isinstance(fallback_data, dict):
+                 logger.info("Fallback Grok parsing succeeded for Gemini text output.")
+                 return {
+                     "summary": fallback_data.get("summary", ""),
+                     "key_facts": fallback_data.get("key_facts", []),
+                 }
+         except Exception as fallback_error:
+             logger.error(f"Fallback Grok parsing failed: {fallback_error}")
          return None
     except Exception as e:
         logger.error(f"An unexpected error occurred during Gemini text output parsing: {e}")
@@ -116,6 +141,10 @@ class NewsSearchInput(BaseModel):
     query: str = Field(description="Keywords or phrase to search for in recent news articles.")
     language: str = Field(default='en', description="The 2-letter ISO 639-1 code of the language.")
     page_size: int = Field(default=10, description="Number of news results (max 100).")
+
+class WikipediaSearchInput(BaseModel):
+    query: str = Field(description="Query string for Wikipedia search.")
+    limit: int = Field(default=5, description="Number of results to return (max 20).")
 
 
 # --- Query Decomposition Tool ---
@@ -297,6 +326,50 @@ def news_search(query: str, language: str = 'en', page_size: int = 10) -> Dict[s
         logger.error(f"Error during NewsAPI search for query '{query}': {e}", exc_info=True) # Add traceback
         return {"error": f"NewsAPI search failed: {e}", "articles": []}
 
+@tool(args_schema=WikipediaSearchInput)
+def wikipedia_search(query: str, limit: int = 5) -> Dict[str, Any]:
+    """
+    Searches Wikipedia using the Wikimedia API.
+    Returns a list of results with titles, URLs, and snippets.
+    """
+    logger.info(f"Performing Wikipedia search for query: '{query}'")
+    try:
+        url = "https://en.wikipedia.org/w/api.php"
+        headers = config.get_wikimedia_headers()
+        params = {
+            "action": "query",
+            "list": "search",
+            "srsearch": query,
+            "srlimit": min(max(int(limit), 1), 20),
+            "utf8": 1,
+            "format": "json",
+        }
+        response = requests.get(url, headers=headers, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+
+        results = []
+        for item in data.get("query", {}).get("search", []):
+            title = item.get("title")
+            page_id = item.get("pageid")
+            snippet = item.get("snippet")
+            if page_id:
+                page_url = f"https://en.wikipedia.org/?curid={page_id}"
+            else:
+                page_url = None
+            results.append({
+                "title": title,
+                "url": page_url,
+                "snippet": snippet,
+                "source_tool": "wikipedia_search",
+            })
+
+        logger.info(f"Wikipedia search completed. Found {len(results)} results.")
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Error during Wikipedia search for query '{query}': {e}")
+        return {"error": f"Wikipedia search failed: {e}"}
+
 @tool(args_schema=SearchInput)
 def duckduckgo_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     """
@@ -458,6 +531,7 @@ def create_agent_tools(cfg: Optional[Dict] = None) -> List[BaseTool]:
         firecrawl_scrape_tool,
         news_search,
         duckduckgo_search,
+        wikipedia_search,
         wikidata_entity_search,
         QueryDecompositionTool(), # Query Decomposition is a class
         gemini_google_search_tool,

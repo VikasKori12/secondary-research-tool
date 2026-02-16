@@ -22,15 +22,12 @@ except ImportError as e:
 
 load_dotenv()
 
-AZURE_OPENAI_API_KEY = os.getenv("AZURE_OPENAI_API_KEY_O3_mini")
-AZURE_OPENAI_ENDPOINT = os.getenv("AZURE_OPENAI_ENDPOINT_O3_mini")
-AZURE_OPENAI_API_VERSION = os.getenv("AZURE_OPENAI_API_VERSION_O3_mini")
-AZURE_OPENAI_DEPLOYMENT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME_O3_mini")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+OPENAI_MODEL = os.getenv("OPENAI_MODEL")
+OPENAI_BASE_URL = os.getenv("OPENAI_BASE_URL")
 
-AZURE_OPENAI_API_KEY_ALT = os.getenv("AZURE_OPENAI_API_KEY")
-AZURE_OPENAI_ENDPOINT_ALT = os.getenv("AZURE_OPENAI_ENDPOINT")
-AZURE_OPENAI_API_VERSION_ALT = os.getenv("AZURE_OPENAI_API_VERSION")
-AZURE_OPENAI_DEPLOYMENT_ALT = os.getenv("AZURE_OPENAI_CHAT_DEPLOYMENT_NAME")
+ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
+ANTHROPIC_MODEL = os.getenv("ANTHROPIC_MODEL")
 
 TAVILY_API_KEY = os.getenv("TAVILY_API_KEY2")
 
@@ -38,6 +35,10 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL")
 
 NEWS_API_KEY = os.getenv("NEWS_API_KEY")
+
+USER_AGENT = os.getenv("USER_AGENT")
+
+WIKIMEDIA_API_TOKEN = (os.getenv("WIKIMEDIA_API_TOKEN") or "").strip()
 
 WIKIDATA_API_ENDPOINT = "https://www.wikidata.org/w/api.php"
 
@@ -56,17 +57,27 @@ else:
     logging.warning("GEMINI_API_KEY not set or google.generativeai not installed. Cannot configure Gemini client.")
 
 def get_primary_llm(streaming: bool = False):
-    """Get the primary LLM client."""
-    if AZURE_OPENAI_API_KEY and AZURE_OPENAI_ENDPOINT:
-        from langchain_openai import AzureChatOpenAI
-        return AzureChatOpenAI(
-            azure_endpoint=AZURE_OPENAI_ENDPOINT,
-            openai_api_version=AZURE_OPENAI_API_VERSION,
-            deployment_name=AZURE_OPENAI_DEPLOYMENT,
-            openai_api_key=AZURE_OPENAI_API_KEY,
+    """Get the primary LLM client (OpenAI -> Anthropic fallback)."""
+    if OPENAI_API_KEY and OPENAI_MODEL:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=OPENAI_MODEL,
+            streaming=streaming,
         )
-    else:
-        raise ValueError("AZURE_OPENAI_API_KEY or AZURE_OPENAI_ENDPOINT not set. Cannot create primary LLM client.")
+
+    if ANTHROPIC_API_KEY and ANTHROPIC_MODEL:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            anthropic_api_key=ANTHROPIC_API_KEY,
+            model=ANTHROPIC_MODEL,
+            streaming=streaming,
+        )
+
+    raise ValueError(
+        "No LLM credentials configured. Set OPENAI_API_KEY + OPENAI_MODEL, "
+        "or ANTHROPIC_API_KEY + ANTHROPIC_MODEL."
+    )
 
 
 def get_tavily_client():
@@ -87,6 +98,16 @@ def get_news_api_client():
     
     from newsapi import NewsApiClient
     return NewsApiClient(api_key=NEWS_API_KEY)
+
+def get_wikimedia_headers() -> Dict[str, str]:
+    """Build headers for Wikimedia API calls."""
+    user_agent = USER_AGENT or "FaradayWebResearchAgent/1.0 (contact: local)"
+    headers = {
+        "User-Agent": user_agent,
+    }
+    if WIKIMEDIA_API_TOKEN:
+        headers["Authorization"] = f"Bearer {WIKIMEDIA_API_TOKEN}"
+    return headers
 
 def get_wikidata_client():
     """Get a function to query the Wikidata API."""
@@ -125,22 +146,28 @@ def get_entity_details(entity_id: str, language: str = "en"):
         raise Exception(f"Wikidata API request failed with status code {response.status_code}")
 
 
-def get_azure_openai_parser_llm():
-    """Get the Azure OpenAI LLM client using alternate credentials for parsing tasks."""
-    if AZURE_OPENAI_API_KEY_ALT and AZURE_OPENAI_ENDPOINT_ALT:
-        from langchain_openai import AzureChatOpenAI
-        logging.info(f"Initializing Azure OpenAI parser LLM with endpoint: {AZURE_OPENAI_ENDPOINT_ALT} and deployment: {AZURE_OPENAI_DEPLOYMENT_ALT}")
-        return AzureChatOpenAI(
-            azure_endpoint=AZURE_OPENAI_ENDPOINT_ALT,
-            openai_api_version=AZURE_OPENAI_API_VERSION_ALT,
-            deployment_name=AZURE_OPENAI_DEPLOYMENT_ALT,
-            openai_api_key=AZURE_OPENAI_API_KEY_ALT,
-            temperature=0.1, 
-            max_retries=3, 
+def get_parser_llm():
+    """Get a lightweight parser LLM (OpenAI -> Anthropic fallback)."""
+    if OPENAI_API_KEY and OPENAI_MODEL:
+        from langchain_openai import ChatOpenAI
+        return ChatOpenAI(
+            api_key=OPENAI_API_KEY,
+            model=OPENAI_MODEL,
+            temperature=0.1,
+            max_retries=3,
         )
-    else:
-        logging.error("Alternate Azure OpenAI credentials (API Key, Endpoint, Version, Deployment) not fully set. Cannot create parser LLM client.")
-        raise ValueError("Alternate Azure OpenAI credentials not set.") 
+
+    if ANTHROPIC_API_KEY and ANTHROPIC_MODEL:
+        from langchain_anthropic import ChatAnthropic
+        return ChatAnthropic(
+            anthropic_api_key=ANTHROPIC_API_KEY,
+            model=ANTHROPIC_MODEL,
+            temperature=0.1,
+            max_retries=3,
+        )
+
+    logging.error("Parser LLM credentials not set for OpenAI or Anthropic.")
+    raise ValueError("Parser LLM credentials not set.")
 
 def get_gemini_llm(streaming: bool = False):
     """Get the Google Gemini LLM client."""

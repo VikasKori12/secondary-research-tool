@@ -2,6 +2,7 @@ import operator
 import logging
 import uuid
 import json
+import os
 from typing import TypedDict, Annotated, Sequence, List, Optional, Dict, Any
 from datetime import datetime
 
@@ -13,8 +14,15 @@ from pydantic import BaseModel, Field
 
 from .config import get_primary_llm
 from .tools import create_agent_tools
-from .prompts import AGENT_SYSTEM_PROMPT, REPORT_SYNTHESIS_TEMPLATE, report_parser
+from .prompts import (
+    AGENT_SYSTEM_PROMPT,
+    REPORT_SYNTHESIS_TEMPLATE,
+    MARKET_RESEARCH_SYSTEM_PROMPT,
+    MARKET_REPORT_SYNTHESIS_TEMPLATE,
+    report_parser,
+)
 from .schemas import ResearchReport, Source, IntermediateStep, ResearchRequest, ErrorResponse
+from .postprocessor import improve_report
 from langchain_core.exceptions import OutputParserException
 
 # Configure logging
@@ -26,6 +34,7 @@ class AgentState(TypedDict):
     """Represents the state of the Web Research Agent."""
     query: str
     research_id: str
+    market_research: bool
     messages: Annotated[Sequence[BaseMessage], operator.add]
     intermediate_steps: Annotated[List[tuple[ToolInvocation, Any]], operator.add] = []
     final_result: Optional[ResearchReport] = None
@@ -36,7 +45,8 @@ class AgentState(TypedDict):
 def agent_node(state: AgentState, agent, tools, name: str):
     """Node that calls the agent model to decide the next action."""
     logger.info(f"[{name} - ID: {state.get('research_id')}] Agent node executing.")
-    system_prompt_content = AGENT_SYSTEM_PROMPT.format(
+    system_prompt = MARKET_RESEARCH_SYSTEM_PROMPT if state.get("market_research") else AGENT_SYSTEM_PROMPT
+    system_prompt_content = system_prompt.format(
         tool_descriptions="\n".join([f"{tool.name}: {tool.description}" for tool in tools])
     )
 
@@ -84,7 +94,7 @@ def tool_node(state: AgentState, tool_executor, name: str):
             continue
 
         # Handle the FINISH signal - it shouldn't be executed as a tool here
-        if tool_name.upper() == "FINISH":
+        if isinstance(tool_name, str) and tool_name.upper() == "FINISH":
             logger.warning(f"[{name} - ID: {state.get('research_id')}] Agent attempted to call FINISH as a tool. Skipping tool execution for FINISH call.")
             continue
 
@@ -133,23 +143,52 @@ def generate_final_report_node(state: AgentState, name: str) -> Dict[str, Option
     intermediate_steps = state.get("intermediate_steps", [])
     original_query = state.get("query", "No query provided")
 
+    max_evidence_steps = int(os.getenv("MAX_EVIDENCE_STEPS", "80"))
+    max_observation_chars = int(os.getenv("MAX_OBSERVATION_CHARS", "600"))
+
+    def _is_error_observation(observation_text: str) -> bool:
+        lowered = observation_text.lower()
+        return "error" in lowered or "exception" in lowered or "traceback" in lowered
+
+    selected_steps = intermediate_steps
+    if len(intermediate_steps) > max_evidence_steps:
+        non_error_steps = [step for step in intermediate_steps if not _is_error_observation(str(step[1]))]
+        if len(non_error_steps) >= max_evidence_steps:
+            selected_steps = non_error_steps[-max_evidence_steps:]
+        else:
+            selected_steps = (non_error_steps + intermediate_steps)[-max_evidence_steps:]
+        logger.warning(
+            f"[{name} - ID: {research_id}] Trimming evidence steps from {len(intermediate_steps)} to "
+            f"{len(selected_steps)} to reduce prompt size."
+        )
+
     # --- Source Extraction and Filtering ---
     formatted_evidence = ""
     potential_sources: List[Source] = []
     unique_source_urls = set()
 
-    logger.info(f"[{name} - ID: {research_id}] Formatting evidence and extracting sources from {len(intermediate_steps)} intermediate steps.")
-    for step_index, (tool_invocation, observation) in enumerate(intermediate_steps):
+    logger.info(f"[{name} - ID: {research_id}] Formatting evidence and extracting sources from {len(selected_steps)} intermediate steps.")
+    if len(selected_steps) < len(intermediate_steps):
+        formatted_evidence += (
+            f"\n[Note] Evidence trimmed: {len(intermediate_steps) - len(selected_steps)} steps omitted "
+            "to stay within LLM limits.\n"
+        )
+
+    for step_index, (tool_invocation, observation) in enumerate(selected_steps):
         step_number = step_index + 1
         tool_name = tool_invocation.tool
         tool_input = tool_invocation.tool_input
+        observation_text = str(observation)
+        display_observation = observation_text[:max_observation_chars]
+        if len(observation_text) > max_observation_chars:
+            display_observation += "..."
         formatted_evidence += f"\n--- Step {step_number}: Tool Used: {tool_name} ---\n"
         formatted_evidence += f"Input: {str(tool_input)[:200]}{'...' if len(str(tool_input)) > 200 else ''}\n"
-        formatted_evidence += f"Observation:\n{str(observation)[:1000]}{'...' if len(str(observation)) > 1000 else ''}\n"
+        formatted_evidence += f"Observation:\n{display_observation}\n"
 
         # Extract potential sources
         try:
-            obs_data = json.loads(observation) if isinstance(observation, str) else observation
+            obs_data = json.loads(observation_text) if isinstance(observation, str) else observation
             if isinstance(obs_data, dict):
                 # Handle various tool outputs
                 results = obs_data.get('results') or obs_data.get('articles')
@@ -204,23 +243,23 @@ def generate_final_report_node(state: AgentState, name: str) -> Dict[str, Option
     # --- Filter and Deduplicate Sources ---
     filtered_sources: List[Source] = []
     for source in potential_sources:
+        url_text = str(source.url) if source.url else ""
         # Check if URL is valid and not already added
         if (
-            source.url and
-            isinstance(source.url, str) and
-            source.url.strip() and
-            source.url.strip().lower() != 'n/a' and
-            source.url not in unique_source_urls
+            url_text and
+            url_text.strip() and
+            url_text.strip().lower() != "n/a" and
+            url_text not in unique_source_urls
         ):
-             if source.url.strip().lower().startswith(('http://', 'https://')):
-                 filtered_sources.append(source)
-                 unique_source_urls.add(source.url)
-             else:
-                  logger.warning(f"[{name} - ID: {research_id}] Filtering out source with invalid URL format: {source.url}")
-        elif source.url in unique_source_urls:
-             logger.debug(f"[{name} - ID: {research_id}] Skipping duplicate source URL: {source.url}")
+            if url_text.strip().lower().startswith(("http://", "https://")):
+                filtered_sources.append(source)
+                unique_source_urls.add(url_text)
+            else:
+                logger.warning(f"[{name} - ID: {research_id}] Filtering out source with invalid URL format: {url_text}")
+        elif url_text in unique_source_urls:
+            logger.debug(f"[{name} - ID: {research_id}] Skipping duplicate source URL: {url_text}")
         else:
-             logger.warning(f"[{name} - ID: {research_id}] Filtering out source with invalid/missing URL: {source.url}")
+            logger.warning(f"[{name} - ID: {research_id}] Filtering out source with invalid/missing URL: {url_text}")
 
     logger.info(f"[{name} - ID: {research_id}] Total unique and valid sources filtered for report: {len(filtered_sources)}")
     # --- End: Source Extraction and Filtering ---
@@ -234,19 +273,41 @@ def generate_final_report_node(state: AgentState, name: str) -> Dict[str, Option
         "formatted_evidence": formatted_evidence,
         "sources": filtered_sources
     }
-    synthesis_prompt_template = REPORT_SYNTHESIS_TEMPLATE
+    synthesis_prompt_template = MARKET_REPORT_SYNTHESIS_TEMPLATE if state.get("market_research") else REPORT_SYNTHESIS_TEMPLATE
     synthesis_chain = synthesis_prompt_template | synthesis_model | report_parser
 
     logger.info(f"[{name} - ID: {research_id}] Invoking synthesis LLM chain...")
     try:
         final_report_object: ResearchReport = synthesis_chain.invoke(prompt_context)
         logger.info(f"[{name} - ID: {research_id}] Synthesis and parsing successful.")
+        # Postprocess the generated report to improve structure, tone, and remove noise
+        try:
+            postprocessed = improve_report(final_report_object)
+            if isinstance(postprocessed, ResearchReport):
+                final_report_object = postprocessed
+                logger.info(f"[{name} - ID: {research_id}] Postprocessing applied to final report.")
+            else:
+                logger.warning(f"[{name} - ID: {research_id}] Postprocessor returned error: %s", getattr(postprocessed, 'error', 'unknown'))
+        except Exception as e:
+            logger.warning(f"[{name} - ID: {research_id}] Error running postprocessor: {e}")
         # Ensure the filtered sources are part of the final report object
         if not final_report_object.sources:
              logger.warning(f"[{name} - ID: {research_id}] Final report object created but sources list is empty. Assigning filtered sources.")
              final_report_object.sources = filtered_sources
-        elif len(final_report_object.sources) != len(filtered_sources):
-             logger.warning(f"[{name} - ID: {research_id}] Mismatch between filtered sources ({len(filtered_sources)}) and sources in parsed report ({len(final_report_object.sources)}). Using parsed report sources.")
+        else:
+             merged_sources: List[Source] = []
+             seen_urls = set()
+             for source in final_report_object.sources + filtered_sources:
+                 url_text = str(source.url) if source.url else ""
+                 if not url_text or url_text in seen_urls:
+                     continue
+                 seen_urls.add(url_text)
+                 merged_sources.append(source)
+             if len(merged_sources) != len(final_report_object.sources):
+                 logger.warning(
+                     f"[{name} - ID: {research_id}] Expanded sources list from {len(final_report_object.sources)} to {len(merged_sources)} using filtered sources."
+                 )
+             final_report_object.sources = merged_sources
 
         return {"final_result": final_report_object}
 
@@ -264,6 +325,15 @@ def should_continue(state: AgentState) -> str:
     messages = state["messages"]
     last_message = messages[-1] if messages else None
     research_id = state.get('research_id')
+    max_agent_steps = int(os.getenv("MAX_AGENT_STEPS", "24"))
+    current_steps = len(state.get("intermediate_steps", []))
+
+    if current_steps >= max_agent_steps:
+        logger.warning(
+            f"[Router - ID: {research_id}] Max agent steps reached ({current_steps}/{max_agent_steps}). "
+            "Routing to generate_final_report."
+        )
+        return "generate_final_report"
 
     if not last_message:
         logger.error(f"[Router - ID: {research_id}] No messages in state. Ending run.")
@@ -273,11 +343,14 @@ def should_continue(state: AgentState) -> str:
     if isinstance(last_message, AIMessage):
         if last_message.tool_calls:
             for tc in last_message.tool_calls:
-                if tc.get("name", "").upper() == "FINISH":
+                name = tc.get("name")
+                if isinstance(name, str) and name.upper() == "FINISH":
                     finish_called = True
                     logger.info(f"[Router - ID: {research_id}] FINISH tool call detected.")
                     break
-        if not finish_called and getattr(last_message, 'content', None) and "FINISH" in last_message.content.upper():
+        content = getattr(last_message, "content", None)
+        content_text = content if isinstance(content, str) else ""
+        if not finish_called and content_text and "FINISH" in content_text.upper():
             finish_called = True
             logger.info(f"[Router - ID: {research_id}] FINISH signal detected in message content.")
 
@@ -312,7 +385,10 @@ def create_web_research_agent_graph(config: Optional[Dict] = None):
     if config is None:
         config = {}
 
-    primary_llm = get_primary_llm(config)
+    streaming = False
+    if isinstance(config, dict):
+        streaming = bool(config.get("streaming", False))
+    primary_llm = get_primary_llm(streaming=streaming)
     if not primary_llm:
         raise ValueError("Primary LLM could not be configured.")
 
@@ -361,16 +437,22 @@ async def run_web_research(query: str, config: Optional[Dict] = None):
 
     app = create_web_research_agent_graph(config)
 
+    market_research = bool(config.get("market_research")) if isinstance(config, dict) else False
+
     initial_state = AgentState(
         query=query,
         research_id=research_id,
+        market_research=market_research,
         messages=[HumanMessage(content=query)],
         intermediate_steps=[],
         final_result=None
     )
 
     try:
-        final_state = app.invoke(initial_state, config={"recursion_limit": 40})
+        recursion_limit = int(os.getenv("RECURSION_LIMIT", "80"))
+        if isinstance(config, dict) and "recursion_limit" in config:
+            recursion_limit = int(config["recursion_limit"])
+        final_state = app.invoke(initial_state, config={"recursion_limit": recursion_limit})
 
         logger.info(f"Research completed for ID: {research_id}")
         final_result = final_state.get('final_result')
