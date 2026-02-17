@@ -1,6 +1,5 @@
 An Autonomous Web and Market Research Agent 🕵️‍♀️
 
-(https://img.shields.io/badge/Faraday-Web-Researcher-Agent-brightgreen.svg)
 [![Release Version](https://img.shields.io/github/v/release/DennisDRX/Faraday-Web-Researcher-Agent)](https://github.com/DennisDRX/Faraday-Web-Researcher-Agent/releases)
 
 Welcome to the **Web-Researcher-Agent** repository! This project aims to provide an autonomous web research agent that efficiently investigates queries using various dynamic tools. With Faraday, you can gather information from multiple sources and synthesize structured reports using a user-friendly Streamlit interface.
