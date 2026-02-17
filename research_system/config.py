@@ -6,8 +6,13 @@ from typing import Dict, Any, Optional
 import logging
 from dotenv import load_dotenv
 from tavily import TavilyClient
-from google.genai import types
-from google.ai import generativelanguage as glm 
+
+try:
+    from google.genai import types
+    from google.ai import generativelanguage as glm
+except ImportError:
+    types = None
+    glm = None
 
 try:
     import google.generativeai as genai
