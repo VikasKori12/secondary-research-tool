@@ -251,93 +251,93 @@ try:
         generate()
 
     def perform_gemini_google_search(claim: str) -> Dict[str, Any]:
-    """
-    Performs a search using the Gemini model (specified by GEMINI_MODEL env var)
-    with Google Search tool enabled.
+        """
+        Performs a search using the Gemini model (specified by GEMINI_MODEL env var)
+        with Google Search tool enabled.
 
-    Args:
-        claim: The claim or query to search for.
+        Args:
+            claim: The claim or query to search for.
 
-    Returns:
-        A dictionary containing the 'text' response and 'source_urls' list
-        extracted from grounding metadata, or an error string.
-    """
-    if not genai:
-        logging.error("google.generativeai is not installed or configured.")
-        return {"error": "Gemini library not available.", "text": "", "source_urls": []}
-    if not GEMINI_API_KEY:
-        logging.error("GEMINI_API_KEY not set.")
-        return {"error": "GEMINI_API_KEY not configured.", "text": "", "source_urls": []}
-    if not GEMINI_MODEL:
-        logging.error("GEMINI_MODEL environment variable not set.")
-        return {"error": "GEMINI_MODEL not configured.", "text": "", "source_urls": []}
+        Returns:
+            A dictionary containing the 'text' response and 'source_urls' list
+            extracted from grounding metadata, or an error string.
+        """
+        if not genai:
+            logging.error("google.generativeai is not installed or configured.")
+            return {"error": "Gemini library not available.", "text": "", "source_urls": []}
+        if not GEMINI_API_KEY:
+            logging.error("GEMINI_API_KEY not set.")
+            return {"error": "GEMINI_API_KEY not configured.", "text": "", "source_urls": []}
+        if not GEMINI_MODEL:
+            logging.error("GEMINI_MODEL environment variable not set.")
+            return {"error": "GEMINI_MODEL not configured.", "text": "", "source_urls": []}
 
-    try:
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        # Construct the prompt with explicit instructions
-        prompt_text = f"""Please research the following query using the Google Search tool: '{claim}'
+        try:
+            client = genai.Client(api_key=GEMINI_API_KEY)
+            
+            # Construct the prompt with explicit instructions
+            prompt_text = f"""Please research the following query using the Google Search tool: '{claim}'
 
 Provide a comprehensive answer based *only* on the search results. 
 Critically, ensure you list the URLs of all web sources consulted to generate your answer."""
 
-        contents = [
-            types.Content(
-                role="user",
-                parts=[
-                    types.Part.from_text(text=prompt_text)
-                ],
-            ),
-        ]
-        
-        tools = [
-            types.Tool(google_search=types.GoogleSearch())
-        ]
-        
-        generate_content_config = types.GenerateContentConfig(
-            tools=tools,
-            temperature=0.1,
-            response_mime_type="text/plain",
-        )
-        
-        logging.info(f"Sending request to Gemini model '{GEMINI_MODEL}' with Google Search enabled.")
-        
-        response = client.models.generate_content(
-            model=GEMINI_MODEL,
-            contents=contents,
-            config=generate_content_config,
-        )
-        
-        search_response_text = ""
-        source_urls = []
+            contents = [
+                types.Content(
+                    role="user",
+                    parts=[
+                        types.Part.from_text(text=prompt_text)
+                    ],
+                ),
+            ]
+            
+            tools = [
+                types.Tool(google_search=types.GoogleSearch())
+            ]
+            
+            generate_content_config = types.GenerateContentConfig(
+                tools=tools,
+                temperature=0.1,
+                response_mime_type="text/plain",
+            )
+            
+            logging.info(f"Sending request to Gemini model '{GEMINI_MODEL}' with Google Search enabled.")
+            
+            response = client.models.generate_content(
+                model=GEMINI_MODEL,
+                contents=contents,
+                config=generate_content_config,
+            )
+            
+            search_response_text = ""
+            source_urls = []
 
-        # Extract text response
-        if response.candidates and response.candidates[0].content.parts:
-            search_response_text = response.candidates[0].content.parts[0].text
-            logging.info(f"Received text response from Gemini: {search_response_text[:100]}...")
-        else:
-            logging.warning("Gemini response did not contain expected content parts.")
-            # Return error early if no text part
-            return {"error": "No valid response text content from Gemini.", "text": "", "source_urls": []} 
+            # Extract text response
+            if response.candidates and response.candidates[0].content.parts:
+                search_response_text = response.candidates[0].content.parts[0].text
+                logging.info(f"Received text response from Gemini: {search_response_text[:100]}...")
+            else:
+                logging.warning("Gemini response did not contain expected content parts.")
+                # Return error early if no text part
+                return {"error": "No valid response text content from Gemini.", "text": "", "source_urls": []} 
 
-        # Extract source URLs from grounding metadata
-        if response.candidates[0].grounding_metadata and response.candidates[0].grounding_metadata.grounding_chunks:
-            for chunk in response.candidates[0].grounding_metadata.grounding_chunks:
-                if hasattr(chunk, 'web') and hasattr(chunk.web, 'uri') and chunk.web.uri:
-                    source_urls.append(chunk.web.uri)
-            # Remove potential duplicates
-            source_urls = list(dict.fromkeys(source_urls))
-            logging.info(f"Extracted {len(source_urls)} unique source URLs from grounding metadata chunks.")
-        else:
-             logging.info("No grounding metadata chunks found or grounding failed.")
+            # Extract source URLs from grounding metadata
+            if response.candidates[0].grounding_metadata and response.candidates[0].grounding_metadata.grounding_chunks:
+                for chunk in response.candidates[0].grounding_metadata.grounding_chunks:
+                    if hasattr(chunk, 'web') and hasattr(chunk.web, 'uri') and chunk.web.uri:
+                        source_urls.append(chunk.web.uri)
+                # Remove potential duplicates
+                source_urls = list(dict.fromkeys(source_urls))
+                logging.info(f"Extracted {len(source_urls)} unique source URLs from grounding metadata chunks.")
+            else:
+                 logging.info("No grounding metadata chunks found or grounding failed.")
 
-        # Return text and URLs separately
-        return {"text": search_response_text, "source_urls": source_urls}
+            # Return text and URLs separately
+            return {"text": search_response_text, "source_urls": source_urls}
 
-    except Exception as e:
-        logging.error(f"Error during Gemini search for '{claim}': {e}")
-        # Ensure consistent error return format
-        return {"error": f"Error: {e}", "text": "", "source_urls": []}
+        except Exception as e:
+            logging.error(f"Error during Gemini search for '{claim}': {e}")
+            # Ensure consistent error return format
+            return {"error": f"Error: {e}", "text": "", "source_urls": []}
 
 except ImportError as e:
     logging.warning(f"google.genai not available: {e}. Gemini search functions disabled.")
