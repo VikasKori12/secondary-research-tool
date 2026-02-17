@@ -31,6 +31,8 @@ from newsapi import NewsApiClient
 import google.generativeai as genai
 from google.genai import types
 
+import os
+
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -370,6 +372,97 @@ def wikipedia_search(query: str, limit: int = 5) -> Dict[str, Any]:
         logger.error(f"Error during Wikipedia search for query '{query}': {e}")
         return {"error": f"Wikipedia search failed: {e}"}
 
+
+@tool(args_schema=SearchInput)
+def crossref_search(query: str, max_results: int = 10) -> Dict[str, Any]:
+    """
+    Search academic literature via CrossRef REST API. No API key required.
+    Returns list of works with title, URL (DOI link), authors, and published date.
+    """
+    logger.info(f"Performing CrossRef search for query: '{query}'")
+    try:
+        url = "https://api.crossref.org/works"
+        params = {
+            "query": query,
+            "rows": min(max_results, 100),
+        }
+        resp = requests.get(url, params=params, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        items = data.get("message", {}).get("items", [])
+        results = []
+        for it in items:
+            doi = it.get("DOI")
+            title = " ".join(it.get("title", [])) if it.get("title") else None
+            authors = []
+            for a in it.get("author", [])[:5]:
+                name = " ".join(filter(None, [a.get("given"), a.get("family")]))
+                if name:
+                    authors.append(name)
+            pub_date_parts = it.get("issued", {}).get("date-parts", [])
+            pub_date = None
+            if pub_date_parts and isinstance(pub_date_parts, list):
+                parts = pub_date_parts[0]
+                pub_date = "-".join(str(p) for p in parts)
+            url_link = f"https://doi.org/{doi}" if doi else it.get("URL")
+            results.append({
+                "title": title,
+                "url": url_link,
+                "authors": authors,
+                "published": pub_date,
+                "source_tool": "crossref_search",
+            })
+        logger.info(f"CrossRef search completed. Found {len(results)} results.")
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Error during CrossRef search for '{query}': {e}")
+        return {"error": f"CrossRef search failed: {e}"}
+
+
+@tool(args_schema=SearchInput)
+def semanticscholar_search(query: str, max_results: int = 10) -> Dict[str, Any]:
+    """
+    Search Semantic Scholar for papers. Uses Semantic Scholar Graph API v1.
+    Optionally uses `SEMANTIC_SCHOLAR_API_KEY` env var for higher rate limits.
+    """
+    logger.info(f"Performing Semantic Scholar search for query: '{query}'")
+    try:
+        api_key = os.environ.get("SEMANTIC_SCHOLAR_API_KEY")
+        headers = {"Accept": "application/json"}
+        if api_key:
+            headers["x-api-key"] = api_key
+        url = "https://api.semanticscholar.org/graph/v1/paper/search"
+        params = {
+            "query": query,
+            "limit": min(max_results, 100),
+            "fields": "title,authors,year,venue,externalIds,url,abstract"
+        }
+        resp = requests.get(url, params=params, headers=headers, timeout=15)
+        resp.raise_for_status()
+        data = resp.json()
+        results = []
+        for paper in data.get("data", []):
+            title = paper.get("title")
+            url_link = paper.get("url") or None
+            authors = [a.get("name") for a in paper.get("authors", []) if a.get("name")]
+            year = paper.get("year")
+            venue = paper.get("venue")
+            abstract = paper.get("abstract")
+            results.append({
+                "title": title,
+                "url": url_link,
+                "authors": authors,
+                "published": str(year) if year else None,
+                "venue": venue,
+                "abstract": abstract,
+                "source_tool": "semanticscholar_search",
+            })
+        logger.info(f"Semantic Scholar search completed. Found {len(results)} results.")
+        return {"results": results}
+    except Exception as e:
+        logger.error(f"Error during Semantic Scholar search for '{query}': {e}")
+        return {"error": f"Semantic Scholar search failed: {e}"}
+
 @tool(args_schema=SearchInput)
 def duckduckgo_search(query: str, max_results: int = 5) -> List[Dict[str, str]]:
     """
@@ -535,6 +628,8 @@ def create_agent_tools(cfg: Optional[Dict] = None) -> List[BaseTool]:
         wikidata_entity_search,
         QueryDecompositionTool(), # Query Decomposition is a class
         gemini_google_search_tool,
+        crossref_search,
+        semanticscholar_search,
         FINISH # Include the FINISH tool
     ]
     logger.info(f"Created {len(tools)} tools.")

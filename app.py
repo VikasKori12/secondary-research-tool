@@ -66,7 +66,7 @@ def truncate(text: str, words: int = MAX_SUMMARY_WORDS) -> str:
     return text if len(parts) <= words else " ".join(parts[:words]) + " …"
 
 def render_report(report_data: Dict[str, Any]):
-    """Renders the ResearchReport data."""
+    """Renders the ResearchReport data with improved section organization and visual hierarchy."""
     if not report_data:
         st.error("No report data received.")
         return
@@ -101,8 +101,23 @@ def render_report(report_data: Dict[str, Any]):
     def clean_text(text: str) -> str:
         if not text:
             return ""
-        # Remove bracketed ellipses like "[...]" or "[ ... ]".
         return re.sub(r"\[\s*\.\.\.\s*\]", "", text)
+
+    def categorize_section(heading: str) -> str:
+        """Categorize a section heading for better organization."""
+        heading_lower = heading.strip().lower()
+        if any(term in heading_lower for term in ["overview", "introduction", "background", "context"]):
+            return "foundational"
+        elif any(term in heading_lower for term in ["implication", "impact", "analysis", "significance"]):
+            return "analysis"
+        elif any(term in heading_lower for term in ["gap", "limitation", "constraint", "challenge"]):
+            return "limitations"
+        elif any(term in heading_lower for term in ["recommendation", "suggestion", "action", "future"]):
+            return "actionable"
+        elif any(term in heading_lower for term in ["source", "reference", "methodology"]):
+            return "reference"
+        else:
+            return "finding"
 
     query = report_data.get("query", "N/A")
     summary = clean_text(report_data.get("summary", "No summary provided."))
@@ -116,52 +131,153 @@ def render_report(report_data: Dict[str, Any]):
     st.markdown("### Executive Summary")
     st.markdown(f"<div class='summary-box'>{summary}</div>", unsafe_allow_html=True)
 
-    # --- Display Sections ---
+    # --- Organize and Display Sections by Category ---
     if sections:
-        st.markdown("### Detailed Findings")
-        shown_sections = 0
+        # Categorize sections
+        categorized = {"foundational": [], "finding": [], "analysis": [], "limitations": [], "actionable": [], "reference": []}
         for section in sections:
             heading = section.get('heading', 'Section')
-            content = clean_text(section.get('content', ''))
             heading_lower = heading.strip().lower()
-            if heading_lower in {"executive summary", "summary", "overview"}:
+            
+            # Skip if it's a summary/overview that shouldn't be repeated
+            if heading_lower in {"executive summary", "summary"}:
                 continue
-            if is_empty_section(content):
-                continue
-            st.markdown(f"#### {heading}")
-            st.markdown(content, unsafe_allow_html=True)
-            shown_sections += 1
-        if shown_sections == 0:
+                
+            category = categorize_section(heading)
+            categorized[category].append(section)
+
+        # Display Foundational Sections
+        if categorized["foundational"]:
+            st.markdown("### Context & Overview")
+            for section in categorized["foundational"]:
+                heading = section.get('heading', 'Section')
+                content = clean_text(section.get('content', ''))
+                if not is_empty_section(content):
+                    st.markdown(f"#### {heading}")
+                    st.markdown(content, unsafe_allow_html=True)
+
+        # Display Main Finding Sections
+        if categorized["finding"]:
+            st.markdown("### Detailed Findings")
+            for section in categorized["finding"]:
+                heading = section.get('heading', 'Section')
+                content = clean_text(section.get('content', ''))
+                if not is_empty_section(content):
+                    st.markdown(f"#### {heading}")
+                    st.markdown(content, unsafe_allow_html=True)
+
+        # Display Analysis & Implications
+        if categorized["analysis"]:
+            st.markdown("### Analysis & Implications")
+            for section in categorized["analysis"]:
+                heading = section.get('heading', 'Section')
+                content = clean_text(section.get('content', ''))
+                if not is_empty_section(content):
+                    st.markdown(f"#### {heading}")
+                    st.markdown(content, unsafe_allow_html=True)
+
+        # Display Research Gaps & Limitations
+        if categorized["limitations"]:
+            st.markdown("### Research Gaps & Limitations")
+            for section in categorized["limitations"]:
+                heading = section.get('heading', 'Section')
+                content = clean_text(section.get('content', ''))
+                if not is_empty_section(content):
+                    st.markdown(f"#### {heading}")
+                    st.markdown(content, unsafe_allow_html=True)
+
+        # Display Recommendations & Actionable Insights
+        if categorized["actionable"]:
+            st.markdown("### Recommendations & Future Directions")
+            for section in categorized["actionable"]:
+                heading = section.get('heading', 'Section')
+                content = clean_text(section.get('content', ''))
+                if not is_empty_section(content):
+                    st.markdown(f"#### {heading}")
+                    st.markdown(content, unsafe_allow_html=True)
+
+        # Display Reference & Methodology Sections
+        if categorized["reference"]:
+            st.markdown("### Methodology & Sources Assessment")
+            for section in categorized["reference"]:
+                heading = section.get('heading', 'Section')
+                content = clean_text(section.get('content', ''))
+                if not is_empty_section(content):
+                    st.markdown(f"#### {heading}")
+                    st.markdown(content, unsafe_allow_html=True)
+
+        # Show info if no valid sections were found
+        if all(len(cat) == 0 for cat in categorized.values()):
             st.info("No detailed sections were generated in the report.")
     else:
         st.info("No detailed sections were generated in the report.")
 
-    # --- Display Potential Biases/Limitations ---
+    # --- Display Potential Biases/Limitations with better formatting ---
     if biases:
-        st.markdown("### Potential Biases & Limitations")
-        st.warning(biases)
+        st.markdown("### Research Limitations & Source Context")
+        with st.container():
+            st.markdown(f"""
+            <div style="background-color: #1B1E24; border-left: 4px solid #FF6B6B; padding: 16px; border-radius: 4px; margin: 16px 0;">
+                {biases}
+            </div>
+            """, unsafe_allow_html=True)
 
-    # --- Display Sources ---
+    # --- Display Sources with better organization ---
     if sources:
         st.markdown("### Sources Consulted")
-        link_lines = []
+        
+        # Organize sources by type
+        academic_sources = []
+        news_sources = []
+        other_sources = []
+        
         for index, src in enumerate(sources, start=1):
             url = src.get("url")
             if not url:
                 continue
+                
             title = src.get("title") or url
-            tool_used = src.get("tool_used")
+            tool_used = src.get("tool_used", "").lower()
             snippet = clean_text(src.get("snippet") or "")
+            
             if is_noise_source(title, snippet):
                 continue
-            tool_suffix = f" — {tool_used}" if tool_used and tool_used != "tavily_search" else ""
-            line = f"{index}. [{title}]({url}){tool_suffix}"
-            if snippet:
-                line += f"\n    {snippet}"
-            link_lines.append(line)
-        if link_lines:
-            st.markdown("\n".join(link_lines))
-        else:
+            
+            source_entry = {
+                "index": index,
+                "title": title,
+                "url": url,
+                "tool_used": tool_used,
+                "snippet": snippet
+            }
+            
+            # Categorize by source type
+            if "scholar" in tool_used or "academic" in tool_used.lower() or "crossref" in tool_used.lower():
+                academic_sources.append(source_entry)
+            elif "news" in tool_used:
+                news_sources.append(source_entry)
+            else:
+                other_sources.append(source_entry)
+        
+        # Display organized sources
+        def render_source_list(sources_list, category_name):
+            if sources_list:
+                st.markdown(f"**{category_name}**")
+                for src in sources_list:
+                    tool_suffix = f" — {src['tool_used']}" if src['tool_used'] and src['tool_used'] != "tavily_search" else ""
+                    st.markdown(f"[{src['title']}]({src['url']}){tool_suffix}")
+                    if src['snippet']:
+                        st.caption(src['snippet'])
+                st.divider()
+        
+        if academic_sources:
+            render_source_list(academic_sources, "Academic & Research Sources")
+        if news_sources:
+            render_source_list(news_sources, "News & Current Events")
+        if other_sources:
+            render_source_list(other_sources, "Additional References")
+        
+        if not (academic_sources or news_sources or other_sources):
             st.info("No source links were available in the report.")
     else:
         st.info("No sources were listed in the final report.")

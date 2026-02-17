@@ -12,7 +12,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.prebuilt import ToolExecutor, ToolInvocation
 from pydantic import BaseModel, Field
 
-from .config import get_primary_llm
+from .config import get_primary_llm, MAX_EVIDENCE_STEPS, MAX_AGENT_STEPS
 from .tools import create_agent_tools
 from .prompts import (
     AGENT_SYSTEM_PROMPT,
@@ -143,8 +143,8 @@ def generate_final_report_node(state: AgentState, name: str) -> Dict[str, Option
     intermediate_steps = state.get("intermediate_steps", [])
     original_query = state.get("query", "No query provided")
 
-    max_evidence_steps = int(os.getenv("MAX_EVIDENCE_STEPS", "80"))
-    max_observation_chars = int(os.getenv("MAX_OBSERVATION_CHARS", "600"))
+    max_evidence_steps = MAX_EVIDENCE_STEPS
+    max_observation_chars = int(os.getenv("MAX_OBSERVATION_CHARS", "1000"))
 
     def _is_error_observation(observation_text: str) -> bool:
         lowered = observation_text.lower()
@@ -270,11 +270,11 @@ def generate_final_report_node(state: AgentState, name: str) -> Dict[str, Option
     # Pass the filtered sources to the parser
     prompt_context = {
         "query": original_query,
-        "formatted_evidence": formatted_evidence,
-        "sources": filtered_sources
+        "formatted_evidence": formatted_evidence
     }
     synthesis_prompt_template = MARKET_REPORT_SYNTHESIS_TEMPLATE if state.get("market_research") else REPORT_SYNTHESIS_TEMPLATE
     synthesis_chain = synthesis_prompt_template | synthesis_model | report_parser
+    synthesis_chain_no_parser = synthesis_prompt_template | synthesis_model
 
     logger.info(f"[{name} - ID: {research_id}] Invoking synthesis LLM chain...")
     try:
@@ -312,8 +312,84 @@ def generate_final_report_node(state: AgentState, name: str) -> Dict[str, Option
         return {"final_result": final_report_object}
 
     except OutputParserException as ope:
-        logger.error(f"[{name} - ID: {research_id}] Failed to parse report: {ope}. Raw output was:\n{{Raw output omitted}}")
-        return {"final_result": None}
+        logger.error(f"[{name} - ID: {research_id}] Failed to parse report: {ope}. Attempting recovery by fixing JSON format.")
+        # Attempt a recovery: fetch raw LLM output, fix malformed JSON, and validate
+        try:
+            # Invoke the synthesis chain without parser to get raw textual output
+            raw_out = synthesis_chain_no_parser.invoke(prompt_context)
+            raw_text = getattr(raw_out, "content", None) or str(raw_out)
+            import json as _json
+            import re as _re
+
+            # Extract JSON object from response (handle markdown code blocks)
+            json_match = _re.search(r'\{.*\}', raw_text, _re.DOTALL)
+            if json_match:
+                raw_text = json_match.group(0)
+            
+            # Fix common JSON formatting issues
+            fixed_text = raw_text
+            
+            # Fix 1: Add missing commas after closing quotes before next key
+            # Pattern: "value"\s*"nextkey" -> "value", "nextkey"
+            fixed_text = _re.sub(r'("\s*)\n(\s*")', r'\1,\n\2', fixed_text)
+            fixed_text = _re.sub(r'("\s*)(\s*")', r'\1,\2', fixed_text)
+            
+            # Fix 2: Fix missing commas in arrays after objects
+            # Pattern: }\s*{ -> },\s*{
+            fixed_text = _re.sub(r'(\})\s*(\{)', r'\1,\2', fixed_text)
+            
+            # Fix 3: Remove any trailing commas before closing brackets/braces
+            fixed_text = _re.sub(r',(\s*[\]}])', r'\1', fixed_text)
+            
+            try:
+                parsed = _json.loads(fixed_text)
+            except _json.JSONDecodeError as je:
+                logger.warning(f"[{name} - ID: {research_id}] JSON parsing still failed after fixes: {je}. Attempting last-resort cleanup.")
+                # Last resort: try to manually reconstruct minimal valid report
+                extracted_summary = _re.search(r'"summary"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', fixed_text)
+                extracted_query = _re.search(r'"query"\s*:\s*"([^"]*(?:\\.[^"]*)*)"', fixed_text)
+                
+                if extracted_summary and extracted_query:
+                    parsed = {
+                        "query": extracted_query.group(1),
+                        "summary": extracted_summary.group(1),
+                        "sections": [],
+                        "sources": filtered_sources[:5] if filtered_sources else [],
+                        "potential_biases": "Report could not be fully parsed; structure may be incomplete."
+                    }
+                    logger.warning(f"[{name} - ID: {research_id}] Created minimal fallback report with query and summary only.")
+                else:
+                    raise je
+
+            # Clean sections: drop entries that are not dicts or missing required keys
+            raw_sections = parsed.get("sections", []) if isinstance(parsed, dict) else []
+            cleaned_sections = []
+            for s in raw_sections:
+                if not isinstance(s, dict):
+                    continue
+                if not s.get("heading") or not s.get("content"):
+                    continue
+                cleaned_sections.append(s)
+            parsed["sections"] = cleaned_sections if cleaned_sections else [
+                {
+                    "heading": "Research Summary",
+                    "content": parsed.get("summary", "Analysis pending"),
+                    "relevant_source_indices": list(range(min(3, len(filtered_sources))))
+                }
+            ]
+
+            # Validate into ResearchReport (pydantic v2)
+            validated = ResearchReport.model_validate(parsed)
+            logger.info(f"[{name} - ID: {research_id}] Recovery parsing successful after fixing JSON. Using validated report.")
+            
+            # Ensure sources are included
+            if not validated.sources and filtered_sources:
+                validated.sources = filtered_sources[:10]
+            
+            return {"final_result": validated}
+        except Exception as recovery_exc:
+            logger.error(f"[{name} - ID: {research_id}] Recovery attempt failed: {recovery_exc}", exc_info=True)
+            return {"final_result": None}
     except Exception as e:
         logger.error(f"[{name} - ID: {research_id}] An unexpected error occurred during final report synthesis: {e}", exc_info=True)
         return {"final_result": None}
@@ -325,7 +401,7 @@ def should_continue(state: AgentState) -> str:
     messages = state["messages"]
     last_message = messages[-1] if messages else None
     research_id = state.get('research_id')
-    max_agent_steps = int(os.getenv("MAX_AGENT_STEPS", "24"))
+    max_agent_steps = MAX_AGENT_STEPS
     current_steps = len(state.get("intermediate_steps", []))
 
     if current_steps >= max_agent_steps:

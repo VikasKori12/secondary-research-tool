@@ -95,6 +95,7 @@ REPORT_SYNTHESIS_TEMPLATE = ChatPromptTemplate.from_template(
 Your task is to synthesize the gathered information into a comprehensive, well-structured research report based on the user's original query.
 
 Original User Query: {query}
+Current Date: February 16, 2026
 
 Gathered Information & Sources:
 ---
@@ -102,22 +103,61 @@ Gathered Information & Sources:
 ---
 *Note: The evidence above contains summaries, snippets, and source details (like URL, title, tool used) collected during the research process.*
 
+CRITICAL QUALITY REQUIREMENTS:
+- Minimum 6-8 sections per report (each covering a distinct aspect of the query)
+- Each section must be 400-700 words with substantive multi-paragraph content
+- Summary should be 100-200 words, comprehensive and informative
+- Prefer sources dated on or before February 16, 2026
+- When discussing recent developments, prioritize news and academic sources
+- Synthesize information from 3+ sources per section where possible
+- Include direct citations and evidence-based reasoning
+
+REQUIRED SECTION ORGANIZATION:
+1. **Context/Overview Section** (400-700 words): Introduce the topic, its significance, and key context. Synthesize from 3+ sources.
+2. **Detailed Findings Sections** (2-4 sections, each 400-700 words): Organize findings into logical topic areas. Each synthesizes multiple sources into narrative prose.
+3. **Analysis & Implications** (400-700 words): Explain significance and practical implications. Connect different findings coherently.
+4. **Research Gaps & Limitations** (300-500 words): Describe what's unclear, temporal gaps, source limitations. Use prose format, not bullet points.
+5. **Recommendations & Future Directions** (300-500 words): Provide actionable insights and forward-looking perspectives based on findings.
+6. **Sources & Methodology Assessment** (200-300 words): Describe source diversity, temporal distribution, and quality assessment.
+
 Instructions:
 1.  **Review the Original Query:** Ensure your report directly answers or addresses all aspects of the user's query: "{query}".
-2.  **Analyze Evidence:** Carefully review all the provided evidence. Identify key themes, main points, supporting details, and any conflicting information or gaps.
-3.  **Structure the Report:** Organize the findings logically. Use the `ResearchReport` schema provided below. This typically involves:
-    *   A concise `summary` (executive summary) of the main findings.
-    *   Multiple `sections`, each with a clear `heading` and detailed `content` covering a specific aspect or sub-topic derived from the research. Synthesize information from multiple sources within each section where applicable. Aim for 4-7 sections with multi-paragraph content when possible, and prefer longer, more complete coverage over brevity.
-    *   Optionally, link content in sections back to the relevant source indices using `relevant_source_indices`.
-4.  **Synthesize Content:** Write clear, objective, and informative content for the summary and each section. Combine information from different sources smoothly. Avoid simply listing raw data; explain and connect the points.
-5.  **Cite Sources:** Ensure the `sources` list in the final report includes all unique, relevant sources consulted. Use the provided details (URL, title, snippet, tool_used). The indices in `relevant_source_indices` should correctly map to this list.
-6.  **Acknowledge Limitations:** If applicable, include a brief note in `potential_biases` about limitations encountered (e.g., conflicting sources, lack of information on a specific aspect, potential bias in dominant sources).
-7.  **Format Output:** Generate *only* the final JSON object conforming strictly to the `ResearchReport` schema detailed in the format instructions below. Do not include any introductory text, explanations, or markdown formatting outside the JSON structure.
+2.  **Analyze Evidence:** Carefully review all the provided evidence. Identify key themes, main points, supporting details, conflicts, and gaps. Prioritize recent and credible sources.
+3.  **Structure the Report:** Organize the findings following the required section structure above. Use the `ResearchReport` schema:
+    *   A detailed `summary` (executive summary): 100-200 words covering main findings, key trends, and implications.
+    *   Minimum 8 sections, each with:
+        - Clear, descriptive `heading` 
+        - **400-700 word** detailed `content` with multiple paragraphs synthesizing information from multiple sources
+        - Logical flow connecting related points
+        - Evidence-based analysis explaining significance
+        - `relevant_source_indices` mapping to the sources list
+4.  **Synthesize Content with Depth:** Write clear, objective, and highly informative content. Combine information from different sources smoothly. Explain connections between points. Avoid lists; use narrative structure. When data conflicts, acknowledge and explain.
+5.  **Prioritize Academic and Professional Sources:** Where possible, incorporate insights from academic sources (CrossRef, Semantic Scholar) for enhanced credibility and depth.
+6.  **Cite Sources Comprehensively:** Ensure the `sources` list includes all unique, relevant sources. Use provided details (URL, title, snippet, tool_used). Map all source references via `relevant_source_indices`.
+7.  **Acknowledge Date Context and Limitations:** Note in `potential_biases` any limitations (conflicting sources, information gaps, publication date constraints, source dominance, temporal skew).
+8.  **Critical JSON Formatting Rules:**
+    - Output ONLY valid JSON (no markdown, no code blocks, no extra text)
+    - Every property must have a comma after it EXCEPT the last property
+    - All string values must be wrapped in double quotes
+    - Do NOT include any text before or after the JSON object
+    - Validate your JSON before output - missing commas are the most common error
+    - The JSON must start with {{ and end with }}
 
 Format Instructions:
 {format_instructions}
 
-Final JSON Report:
+VALIDATION CHECKLIST BEFORE OUTPUT:
+- [ ] JSON starts with {{ and ends with }}
+- [ ] All required fields present: query, summary, sections, sources, potential_biases
+- [ ] Every object property has a comma after it except the last item
+- [ ] All string values are wrapped in double quotes
+- [ ] sections is an array with 8+ items
+- [ ] Each section has: heading, content, relevant_source_indices
+- [ ] No extra text, markdown, or code blocks
+- [ ] Each section has 400-700 words of substantive content
+- [ ] No section is just "See other sections" or empty
+
+Final JSON Report (valid JSON only, no markdown or explanation):
 """
 )
 
@@ -133,19 +173,14 @@ Gathered Information & Sources:
 ---
 
 Instructions:
-1. Produce INSIGHTS, not observations. Avoid generic statements.
-2. Every insight must explain why it matters, indicate the impact on decisions, and clarify implications.
-3. Structure the report using the ResearchReport schema and include sections for:
-   - Market Overview
-   - SWOT Analysis
-   - PESTEL Analysis
-   - Porter’s Five Forces
-   - VRIO Analysis
-   - Strategic Implications
-4. Use evidence from multiple sources in each section when possible.
-5. Ensure sources list includes all unique, relevant sources.
-6. If data is missing, explain the limitation in `potential_biases`.
-7. Output only valid JSON that matches the ResearchReport schema.
+1. Write narrative prose for every section - no bullet points or lists
+2. Every insight must explain WHY it matters for business decisions and strategy
+3. Synthesize 3+ sources per section into coherent, flowing narrative
+4. Structure with 8+ sections covering market overview, SWOT, PESTEL, Five Forces, competitors, VRIO, implications, recommendations
+5. Ensure all claims are evidence-based with proper source citations via relevant_source_indices
+6. Map all source indices as 0-based values within bounds of sources array
+7. Note any temporal limitations or source gaps in potential_biases
+8. Output only valid JSON format with all required fields
 
 Format Instructions:
 {format_instructions}

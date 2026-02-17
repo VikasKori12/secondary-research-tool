@@ -48,6 +48,14 @@ LOW_CONFIDENCE_THRESHOLD = float(os.getenv("LOW_CONFIDENCE_THRESHOLD", "0.3"))
 
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY")
 
+# Agent configuration for report depth and quality
+MAX_EVIDENCE_STEPS = int(os.getenv("MAX_EVIDENCE_STEPS", "150"))
+MAX_OBSERVATION_CHARS = int(os.getenv("MAX_OBSERVATION_CHARS", "1000"))
+MIN_SECTION_LENGTH_WORDS = int(os.getenv("MIN_SECTION_LENGTH_WORDS", "400"))
+MIN_REPORT_SECTIONS = int(os.getenv("MIN_REPORT_SECTIONS", "6"))
+MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "100"))
+MAX_AGENT_STEPS = int(os.getenv("MAX_AGENT_STEPS", "100"))
+
 if GEMINI_API_KEY and genai: # Check if genai was imported successfully
     try:
         genai.configure(api_key=GEMINI_API_KEY)
