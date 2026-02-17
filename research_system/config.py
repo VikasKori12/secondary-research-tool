@@ -213,45 +213,44 @@ def get_gemini_llm(streaming: bool = False):
         logging.error(f"Failed to create Gemini LLM client: {e}")
         raise ValueError(f"Failed to initialize Gemini LLM: {e}")
 
-import base64
-import os
-from google import genai
-from google.genai import types
+try:
+    import base64
+    from google import genai
+    from google.genai import types
 
+    def generate():
+        client = genai.Client(
+            api_key=os.environ.get("GEMINI_API_KEY"),
+        )
 
-def generate():
-    client = genai.Client(
-        api_key=os.environ.get("GEMINI_API_KEY"),
-    )
+        model = "gemini-2.5-flash-preview-04-17"
+        contents = [
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part.from_text(text="""INSERT_INPUT_HERE"""),
+                ],
+            ),
+        ]
+        tools = [
+            types.Tool(google_search=types.GoogleSearch())
+        ]
+        generate_content_config = types.GenerateContentConfig(
+            tools=tools,
+            response_mime_type="text/plain",
+        )
 
-    model = "gemini-2.5-flash-preview-04-17"
-    contents = [
-        types.Content(
-            role="user",
-            parts=[
-                types.Part.from_text(text="""INSERT_INPUT_HERE"""),
-            ],
-        ),
-    ]
-    tools = [
-        types.Tool(google_search=types.GoogleSearch())
-    ]
-    generate_content_config = types.GenerateContentConfig(
-        tools=tools,
-        response_mime_type="text/plain",
-    )
+        for chunk in client.models.generate_content_stream(
+            model=model,
+            contents=contents,
+            config=generate_content_config,
+        ):
+            print(chunk.text, end="")
 
-    for chunk in client.models.generate_content_stream(
-        model=model,
-        contents=contents,
-        config=generate_content_config,
-    ):
-        print(chunk.text, end="")
+    if __name__ == "__main__":
+        generate()
 
-if __name__ == "__main__":
-    generate()
-
-def perform_gemini_google_search(claim: str) -> Dict[str, Any]:
+    def perform_gemini_google_search(claim: str) -> Dict[str, Any]:
     """
     Performs a search using the Gemini model (specified by GEMINI_MODEL env var)
     with Google Search tool enabled.
@@ -339,6 +338,11 @@ Critically, ensure you list the URLs of all web sources consulted to generate yo
         logging.error(f"Error during Gemini search for '{claim}': {e}")
         # Ensure consistent error return format
         return {"error": f"Error: {e}", "text": "", "source_urls": []}
+
+except ImportError as e:
+    logging.warning(f"google.genai not available: {e}. Gemini search functions disabled.")
+    def perform_gemini_google_search(claim: str) -> Dict[str, Any]:
+        return {"error": "Gemini library not available.", "text": "", "source_urls": []}
 
 def get_firecrawl_client():
     """Get the Firecrawl client."""
