@@ -28,8 +28,12 @@ from langchain_community.document_loaders import WebBaseLoader
 from newsapi import NewsApiClient
 
 # Add google-genai imports
-import google.generativeai as genai
-from google.genai import types
+try:
+    import google.generativeai as genai
+    genai_types = genai.types
+except ImportError:
+    genai = None
+    genai_types = None
 
 import os
 
